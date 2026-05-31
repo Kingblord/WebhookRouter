@@ -1,3 +1,17 @@
+import admin from "firebase-admin";
+
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    }),
+  });
+}
+
+const db = admin.firestore();
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -7,7 +21,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const payload = req.body;
+    const payload = req.body || {};
 
     console.log("====================================");
     console.log("KORA WEBHOOK RECEIVED");
@@ -16,66 +30,46 @@ export default async function handler(req, res) {
     console.log(JSON.stringify(payload, null, 2));
     console.log("====================================");
 
-    const systemA = process.env.SYSTEM_A_WEBHOOK_URL;
-    const systemB = process.env.SYSTEM_B_WEBHOOK_URL;
+    const reference =
+      payload.reference ||
+      payload.payment_reference ||
+      payload.data?.reference ||
+      payload.data?.payment_reference ||
+      `unknown_${Date.now()}`;
 
-    console.log("SYSTEM_A_WEBHOOK_URL:", systemA);
-    console.log("SYSTEM_B_WEBHOOK_URL:", systemB);
+    const status =
+      payload.status ||
+      payload.event ||
+      payload.data?.status ||
+      null;
 
-    // Forward to System A
-    if (systemA) {
-      try {
-        const responseA = await fetch(systemA, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        });
+    await db
+      .collection("kora_webhooks")
+      .doc(reference)
+      .set(
+        {
+          reference,
+          status,
+          payload,
+          receivedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
 
-        console.log(
-          "System A response:",
-          responseA.status,
-          responseA.statusText
-        );
-      } catch (err) {
-        console.error("System A forward failed:", err);
-      }
-    } else {
-      console.error("SYSTEM_A_WEBHOOK_URL is missing");
-    }
-
-    // Forward to System B
-    if (systemB) {
-      try {
-        const responseB = await fetch(systemB, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        });
-
-        console.log(
-          "System B response:",
-          responseB.status,
-          responseB.statusText
-        );
-      } catch (err) {
-        console.error("System B forward failed:", err);
-      }
-    } else {
-      console.error("SYSTEM_B_WEBHOOK_URL is missing");
-    }
+    console.log(
+      `[FIRESTORE] Stored webhook: ${reference}`
+    );
 
     return res.status(200).json({
       success: true,
-      message: "Webhook processed",
+      reference,
+      stored: true,
     });
   } catch (err) {
     console.error("Webhook router error:", err);
 
-    // Return 200 so Kora won't retry forever
+    // Return 200 so Kora doesn't endlessly retry
     return res.status(200).json({
       success: false,
       message: "Webhook handled with error",
